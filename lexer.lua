@@ -18,7 +18,7 @@ end
 ---@param i integer
 ---@return string?
 local function utf8_char_at_pos(s, i)
-  if i then
+  if i >= 1 and i <= utf8.len(s) then
     return utf8.sub(s, i, i)
   else
     return nil
@@ -54,11 +54,15 @@ local function lex_line(line)
     return utf8_tracking_position == utf8_line_length
   end
 
+  local function is_tracker_past_end()
+    return utf8_tracking_position > utf8_line_length
+  end
+
   ---Moves tracker by amount `mvt` and updates utf8_tracking_char
   ---@param mvt number
   ---@return string?
   local function move_tracker(mvt)
-    if not is_tracker_at_end() then
+    if not is_tracker_past_end() then
       utf8_tracking_position = utf8_tracking_position + mvt
       utf8_tracking_char = utf8.sub(line, utf8_tracking_position, utf8_tracking_position)
       print_debug(
@@ -83,8 +87,8 @@ local function lex_line(line)
 
   ---Moves tracker to end of string
   local function move_tracker_to_end()
-    mvt = utf8_line_length - utf8_tracking_position
-    move_tracker(mvt)
+    utf8_tracking_position = utf8_line_length + 1
+    utf8_tracking_char = nil
   end
 
   ---@param i number?
@@ -100,13 +104,13 @@ local function lex_line(line)
       token_type = token_type,
       token_content = token_content,
       utf8_start_position = utf8_start_position,
-      utf8_stop_position = utf8_stop_position,
+      utf8_stop_position = math.min(utf8_stop_position, utf8_line_length),
     }
   end
 
   local function next_token()
     --- If tracker is at end
-    if halt_lexer then
+    if utf8_cursor_position > utf8_line_length then
       return nil
     end
 
@@ -241,8 +245,15 @@ local function lex_line(line)
       utf8_cursor_position = utf8_tracking_position
     end
   end
+
+  while true do
+    next_token()
+    if is_tracker_past_end() then
+      break
+    end
+  end
   return tokens
 end
 
-source = [[tex \m{abcde}]]
-lex_line(source)
+source = [[\startcommand \stopcommand]]
+inspect(lex_line(source))
