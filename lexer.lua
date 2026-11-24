@@ -25,7 +25,7 @@ local function utf8_char_at_pos(s, i)
   end
 end
 
-local escaped_reserved_chars = {
+ESCAPED_RESERVED_CHARS = {
   ["#"] = "literal_hashtag",
   ["$"] = "literal_dollar_sign",
   ["%"] = "literal_percent_sign",
@@ -42,7 +42,7 @@ local escaped_reserved_chars = {
   ["!"] = "negative_thin_space",
 }
 
-local special_chars = {
+SPECIAL_CHARS = {
   ["{"] = "open_brace",
   ["}"] = "close_brace",
   ["["] = "open_bracket",
@@ -54,12 +54,40 @@ local special_chars = {
   ["="] = "equal_sign",
 }
 
+VERBATIM_COMMANDS = {
+  ["\\verbatim"] = {
+    ["^%{"] = "%}",
+  },
+  ["\\type"] = {
+    ["^%{"] = "%}",
+    ["^<<"] = ">>",
+  },
+  ["\\tex"] = {
+    ["^%{"] = "%}",
+  },
+  ["\\filename"] = {
+    ["^%{"] = "%}",
+  },
+  ["\\arg"] = {
+    ["^%{"] = "%}",
+  },
+}
+
+VERBATIM_ENVIRONMENTS = {
+  ["\\starttyping"] = "\\stoptyping",
+  ["\\startTEX"] = "\\stopTEX",
+  ["\\startLUA"] = "\\stopLUA",
+  ["\\startMP"] = "\\stopMP",
+  ["\\startXML"] = "\\stopXML",
+}
+
 local function lex_line(line)
   local utf8_cursor_position = 1
   local utf8_tracking_position = 1
   local utf8_tracking_char = utf8_char_at_pos(line, utf8_tracking_position)
   local utf8_line_length = utf8.len(line)
   local tokens = {}
+  local lexer_state = "normal"
 
   local function is_tracker_past_end()
     return utf8_tracking_position > utf8_line_length
@@ -78,6 +106,10 @@ local function lex_line(line)
     else
       utf8_tracking_char = nil
     end
+  end
+
+  local function move_tracker_to_position(pos)
+    move_tracker(pos - utf8_tracking_position)
   end
 
   ---Moves tracker foreward by one
@@ -169,9 +201,9 @@ local function lex_line(line)
       local next_utf8_char = peek_char_from_tracker()
 
       -- Single letters command
-      if escaped_reserved_chars[next_utf8_char] then
-        token_type = escaped_reserved_chars[next_utf8_char]
-        print("Is a control sequence of type: " .. token_type)
+      if ESCAPED_RESERVED_CHARS[next_utf8_char] then
+        token_type = ESCAPED_RESERVED_CHARS[next_utf8_char]
+        print_debug("Is a control sequence of type: " .. token_type)
         token_content = "\\" .. next_utf8_char
         increment_tracker()
       end
@@ -186,14 +218,64 @@ local function lex_line(line)
             break
           end
         end
-        if utf8.sub(line, utf8_cursor_position + 1, utf8_cursor_position + 5) == "start" then
-          token_type = "begin_environment"
-        elseif utf8.sub(line, utf8_cursor_position + 1, utf8_cursor_position + 4) == "stop" then
-          token_type = "end_environment"
-        else
-          token_type = "control_sequence"
-        end
         token_content = utf8.sub(line, utf8_cursor_position, utf8_tracking_position)
+        token_type = "control_sequence"
+      end
+
+      -- If command is verbatim sequence
+      if VERBATIM_COMMANDS[token_content] then
+        -- Does verbatim open follow command?
+        token_type = "verbatim_sequence"
+        for verbatim_open_regex, verbatim_end_regex in pairs(VERBATIM_COMMANDS[token_content]) do
+          print_debug(utf8_tracking_position)
+          local verbatim_open_start_pos, verbatim_open_end_pos =
+            utf8.find(line, verbatim_open_regex, utf8_tracking_position + 1)
+          local verbatim_close_start_pos, verbatim_close_end_pos =
+            utf8.find(line, verbatim_end_regex, utf8_tracking_position + 1)
+
+          if verbatim_open_start_pos and verbatim_open_end_pos then
+            print_debug(
+              "Found verbatim open string position: " .. verbatim_open_start_pos .. " to " .. verbatim_open_end_pos
+            )
+            if verbatim_close_start_pos and verbatim_close_end_pos then
+              print_debug(
+                "Found verbatim closing string at position: "
+                  .. verbatim_close_start_pos
+                  .. " to "
+                  .. verbatim_close_end_pos
+              )
+              local verbatim_content = utf8.sub(line, verbatim_open_end_pos + 1, verbatim_close_start_pos - 1)
+
+              flush_token(token_content, token_type, utf8_cursor_position, utf8_tracking_position)
+
+              flush_token(
+                utf8.sub(line, verbatim_open_start_pos, verbatim_open_end_pos),
+                "verbatim_open",
+                verbatim_open_start_pos,
+                verbatim_open_end_pos
+              )
+              if verbatim_content ~= "" then
+                flush_token(
+                  verbatim_content,
+                  "verbatim_content",
+                  verbatim_open_end_pos + 1,
+                  verbatim_close_start_pos - 1
+                )
+              end
+              flush_token(
+                utf8.sub(line, verbatim_close_start_pos, verbatim_close_end_pos),
+                "verbatim_close",
+                verbatim_close_start_pos,
+                verbatim_close_end_pos
+              )
+              move_tracker_to_position(verbatim_close_end_pos + 1)
+              utf8_cursor_position = utf8_tracking_position
+              return nil
+            else
+              print_debug("Can't find ending position, resume as normal")
+            end
+          end
+        end
       end
 
       flush_token(token_type, token_content, utf8_cursor_position, utf8_tracking_position)
@@ -223,9 +305,9 @@ local function lex_line(line)
     end
 
     -- Braces
-    if special_chars[utf8_char_at_pos(line, utf8_cursor_position)] then
+    if SPECIAL_CHARS[utf8_char_at_pos(line, utf8_cursor_position)] then
       flush_token(
-        special_chars[utf8_char_at_pos(line, utf8_cursor_position)],
+        SPECIAL_CHARS[utf8_char_at_pos(line, utf8_cursor_position)],
         utf8_char_at_pos(line, utf8_cursor_position),
         utf8_cursor_position,
         utf8_cursor_position
@@ -263,5 +345,5 @@ local function lex_line(line)
   return tokens
 end
 
-source = [[\startenvironment[something] \stopenvironment]]
+source = [[\verbatim{}]]
 inspect(lex_line(source))
