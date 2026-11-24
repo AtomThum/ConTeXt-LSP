@@ -42,17 +42,24 @@ local escaped_reserved_chars = {
   ["!"] = "negative_thin_space",
 }
 
+local special_chars = {
+  ["{"] = "open_brace",
+  ["}"] = "close_brace",
+  ["["] = "open_bracket",
+  ["]"] = "close_bracket",
+  ["("] = "open_parenthesis",
+  [")"] = "close_parenthesis",
+  ["#"] = "hashtag",
+  ['"'] = "quote",
+  ["="] = "equal_sign",
+}
+
 local function lex_line(line)
   local utf8_cursor_position = 1
   local utf8_tracking_position = 1
   local utf8_tracking_char = utf8_char_at_pos(line, utf8_tracking_position)
   local utf8_line_length = utf8.len(line)
   local tokens = {}
-  local halt_lexer = false
-
-  local function is_tracker_at_end()
-    return utf8_tracking_position == utf8_line_length
-  end
 
   local function is_tracker_past_end()
     return utf8_tracking_position > utf8_line_length
@@ -77,12 +84,6 @@ local function lex_line(line)
   ---Handler for `move_tracker`
   local function increment_tracker()
     move_tracker(1)
-  end
-
-  ---Moves tracker backward by one
-  ---Handler for `move_tracker`
-  local function decrement_tracker()
-    move_tracker(-1)
   end
 
   ---Moves tracker to end of string
@@ -163,45 +164,39 @@ local function lex_line(line)
     --- Control sequences
     if utf8_char_at_pos(line, utf8_cursor_position) == "\\" then
       print_debug("Token type is control sequence!")
-      local token_content = { "\\" }
+      local token_content
       local token_type = nil
-      increment_tracker()
+      local next_utf8_char = peek_char_from_tracker()
 
       -- Single letters command
-      if escaped_reserved_chars[utf8_tracking_char] then
-        token_type = escaped_reserved_chars[utf8_tracking_char]
+      if escaped_reserved_chars[next_utf8_char] then
+        token_type = escaped_reserved_chars[next_utf8_char]
         print("Is a control sequence of type: " .. token_type)
-        token_content[#token_content + 1] = utf8_tracking_char
+        token_content = "\\" .. next_utf8_char
+        increment_tracker()
       end
 
+      -- Alphanumeric control sequences
       if token_type == nil then
-        while utf8_tracking_char do
-          token_content[#token_content + 1] = utf8_tracking_char
-          local next_utf8_tracking_char = peek_char_from_tracker()
-          if
-            (next_utf8_tracking_char == "\\")
-            or (next_utf8_tracking_char == " ")
-            or (
-              (utf8_tracking_char == "]")
-              or (utf8_tracking_char == "}")
-                and not (next_utf8_tracking_char == "[" or next_utf8_tracking_char == "{")
-            )
-          then
-            break
-          else
+        while next_utf8_char do
+          if utf8.match(next_utf8_char, "[%w]") then
             increment_tracker()
+            next_utf8_char = peek_char_from_tracker()
+          else
+            break
           end
         end
         if utf8.sub(line, utf8_cursor_position + 1, utf8_cursor_position + 5) == "start" then
-          token_type = "begin_enviroment"
+          token_type = "begin_environment"
         elseif utf8.sub(line, utf8_cursor_position + 1, utf8_cursor_position + 4) == "stop" then
           token_type = "end_environment"
         else
           token_type = "control_sequence"
         end
+        token_content = utf8.sub(line, utf8_cursor_position, utf8_tracking_position)
       end
 
-      flush_token(token_type, table.concat(token_content, ""), utf8_cursor_position, utf8_tracking_position)
+      flush_token(token_type, token_content, utf8_cursor_position, utf8_tracking_position)
       increment_tracker()
       utf8_cursor_position = utf8_tracking_position
       return nil
@@ -227,11 +222,24 @@ local function lex_line(line)
       return nil
     end
 
+    -- Braces
+    if special_chars[utf8_char_at_pos(line, utf8_cursor_position)] then
+      flush_token(
+        special_chars[utf8_char_at_pos(line, utf8_cursor_position)],
+        utf8_char_at_pos(line, utf8_cursor_position),
+        utf8_cursor_position,
+        utf8_cursor_position
+      )
+      increment_tracker()
+      utf8_cursor_position = utf8_tracking_position
+      return nil
+    end
+
     -- Normal words
     if not utf8.match(utf8_char_at_pos(line, utf8_cursor_position), "^%s+$") then
       -- Track until reaches \ or whitespace, then stop
       local next_utf8_char = peek_char_from_tracker()
-      while next_utf8_char and utf8.match(next_utf8_char, "[%w%.,:;!%?'\"%(%)%[%]%/%-%+%*=]") do
+      while next_utf8_char and utf8.match(next_utf8_char, "[%w%.,:;!%?'\"%/%-%+%*=]") do
         increment_tracker()
         next_utf8_char = peek_char_from_tracker()
       end
@@ -255,5 +263,5 @@ local function lex_line(line)
   return tokens
 end
 
-source = [[\startcommand \stopcommand]]
+source = [[\startenvironment[something] \stopenvironment]]
 inspect(lex_line(source))
