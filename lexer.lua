@@ -42,6 +42,23 @@ ESCAPED_RESERVED_CHARS = {
   ["!"] = "negative_thin_space",
 }
 
+ESCAPED_RESERVED_CODEPOINTS = {
+  [0x0023] = "literal_hashtag",
+  [0x0024] = "literal_dollar_sign",
+  [0x0025] = "literal_percent_sign",
+  [0x0026] = "literal_ampersand",
+  [0x005F] = "literal_underscore",
+  [0x007B] = "literal_open_brace",
+  [0x007D] = "literal_close_brace",
+  [0x007C] = "literal_vertical_bar",
+  [0x005C] = "new_line",
+  [0x002D] = "discretionary_hyphen",
+  [0x002C] = "space_thin",
+  [0x0020] = "space_normal",
+  [0x002F] = "space_italic_correction",
+  [0x0021] = "negative_thin_space",
+}
+
 SPECIAL_CHARS = {
   ["{"] = "open_brace",
   ["}"] = "close_brace",
@@ -52,6 +69,18 @@ SPECIAL_CHARS = {
   ["#"] = "hashtag",
   ['"'] = "quote",
   ["="] = "equal_sign",
+}
+
+SPECIAL_CODEPOINTS = {
+  [0x007B] = "open_brace",
+  [0x007D] = "close_brace",
+  [0x005B] = "open_bracket",
+  [0x005D] = "close_bracket",
+  [0x0028] = "open_parenthesis",
+  [0x0029] = "close_parenthesis",
+  [0x0023] = "hashtag",
+  [0x0022] = "quote",
+  [0x003D] = "equal_sign",
 }
 
 VERBATIM_COMMANDS = {
@@ -179,10 +208,8 @@ local function lex_line(line)
     end
 
     -- Dollar sign math open
-    if utf8_char_at_pos(line, utf8_cursor_position) == "$" then
-      local next_utf8_char = peek_char_from_tracker()
-      print_debug("Next char is: " .. (next_utf8_char or "nil"))
-      if next_utf8_char == "$" then
+    if utf8.codepoint(line, utf8_cursor_position) == 0x0024 then
+      if utf8.find(line, "^%$", utf8_cursor_position + 1) then
         flush_token("dollar_sign_display_math", "$$", utf8_cursor_position, utf8_cursor_position + 1)
         move_tracker(2)
       else
@@ -198,28 +225,30 @@ local function lex_line(line)
       print_debug("Token type is control sequence!")
       local token_content
       local token_type = nil
-      local next_utf8_char = peek_char_from_tracker()
 
       -- Single letters command
-      if ESCAPED_RESERVED_CHARS[next_utf8_char] then
-        token_type = ESCAPED_RESERVED_CHARS[next_utf8_char]
+      local next_utf8_cp = utf8.codepoint(line, utf8_cursor_position + 1)
+      if ESCAPED_RESERVED_CODEPOINTS[next_utf8_cp] then
+        token_type = ESCAPED_RESERVED_CODEPOINTS[next_utf8_cp]
         print_debug("Is a control sequence of type: " .. token_type)
-        token_content = "\\" .. next_utf8_char
-        increment_tracker()
+        flush_token(
+          utf8.sub(line, utf8_cursor_position, utf8_cursor_position + 1),
+          token_type,
+          utf8_cursor_position,
+          utf8_cursor_position + 1
+        )
+        move_tracker(2)
+        utf8_cursor_position = utf8_tracking_position
+        return nil
       end
 
       -- Alphanumeric control sequences
       if token_type == nil then
-        while next_utf8_char do
-          if utf8.match(next_utf8_char, "[%w]") then
-            increment_tracker()
-            next_utf8_char = peek_char_from_tracker()
-          else
-            break
-          end
-        end
-        token_content = utf8.sub(line, utf8_cursor_position, utf8_tracking_position)
+        local next_non_alphabetic_utf8_position = utf8.find(line, "%A", utf8_cursor_position + 1)
+          or utf8_line_length + 1
+        token_content = utf8.sub(line, utf8_cursor_position, next_non_alphabetic_utf8_position - 1)
         token_type = "control_sequence"
+        move_tracker_to_position(next_non_alphabetic_utf8_position)
       end
 
       -- If command is verbatim sequence
@@ -229,9 +258,9 @@ local function lex_line(line)
         for verbatim_open_regex, verbatim_end_regex in pairs(VERBATIM_COMMANDS[token_content]) do
           print_debug(utf8_tracking_position)
           local verbatim_open_start_pos, verbatim_open_end_pos =
-            utf8.find(line, verbatim_open_regex, utf8_tracking_position + 1)
+            utf8.find(line, verbatim_open_regex, utf8_tracking_position)
           local verbatim_close_start_pos, verbatim_close_end_pos =
-            utf8.find(line, verbatim_end_regex, utf8_tracking_position + 1)
+            utf8.find(line, verbatim_end_regex, utf8_tracking_position)
 
           if verbatim_open_start_pos and verbatim_open_end_pos then
             print_debug(
@@ -246,8 +275,8 @@ local function lex_line(line)
               )
               local verbatim_content = utf8.sub(line, verbatim_open_end_pos + 1, verbatim_close_start_pos - 1)
 
+              -- Four tokens: verbatim command, verbatim close, contents, and open
               flush_token(token_content, token_type, utf8_cursor_position, utf8_tracking_position)
-
               flush_token(
                 utf8.sub(line, verbatim_open_start_pos, verbatim_open_end_pos),
                 "verbatim_open",
@@ -277,37 +306,29 @@ local function lex_line(line)
           end
         end
       end
-
-      flush_token(token_type, token_content, utf8_cursor_position, utf8_tracking_position)
-      increment_tracker()
+      flush_token(token_type, token_content, utf8_cursor_position, utf8_tracking_position - 1)
       utf8_cursor_position = utf8_tracking_position
       return nil
     end
 
     -- Whitespaces
     if utf8_char_at_pos(line, utf8_cursor_position) == " " then
-      local next_utf8_char = peek_char_from_tracker()
-      local space_count = 1
-      while next_utf8_char and next_utf8_char == " " do
-        space_count = space_count + 1
-        increment_tracker()
-        next_utf8_char = peek_char_from_tracker()
-      end
+      local next_non_whitespace_utf8_position = utf8.find(line, "[^ ]", utf8_cursor_position) or (utf8_line_length + 1)
       flush_token(
         "whitespace",
-        string.rep(" ", space_count),
+        string.rep(" ", next_non_whitespace_utf8_position - utf8_cursor_position),
         utf8_cursor_position,
-        utf8_cursor_position + space_count - 1
+        next_non_whitespace_utf8_position - 1
       )
-      increment_tracker()
+      move_tracker_to_position(next_non_whitespace_utf8_position)
       utf8_cursor_position = utf8_tracking_position
       return nil
     end
 
-    -- Braces
-    if SPECIAL_CHARS[utf8_char_at_pos(line, utf8_cursor_position)] then
+    -- ConTeXt/TeX special characters
+    if SPECIAL_CHARS[utf8.codepoint(line, utf8_cursor_position)] then
       flush_token(
-        SPECIAL_CHARS[utf8_char_at_pos(line, utf8_cursor_position)],
+        SPECIAL_CHARS[utf8.codepoint(line, utf8_cursor_position)],
         utf8_char_at_pos(line, utf8_cursor_position),
         utf8_cursor_position,
         utf8_cursor_position
@@ -318,21 +339,20 @@ local function lex_line(line)
     end
 
     -- Normal words
-    if not utf8.match(utf8_char_at_pos(line, utf8_cursor_position), "^%s+$") then
-      -- Track until reaches \ or whitespace, then stop
-      local next_utf8_char = peek_char_from_tracker()
-      while next_utf8_char and utf8.match(next_utf8_char, "[%w%.,:;!%?'\"%/%-%+%*=]") do
-        increment_tracker()
-        next_utf8_char = peek_char_from_tracker()
-      end
+    if not utf8.match(line, "^%s", utf8_cursor_position) then
+      -- Track until reaches \ or whitespace or end, then stop
+      local next_whitespace_or_backslash_utf8_position = utf8.find(line, "[%s%\\]", utf8_cursor_position)
+        or (utf8_line_length + 1)
+      print(next_whitespace_or_backslash_utf8_position)
       flush_token(
         "words",
-        utf8.sub(line, utf8_cursor_position, utf8_tracking_position),
+        utf8.sub(line, utf8_cursor_position, next_whitespace_or_backslash_utf8_position - 1),
         utf8_cursor_position,
-        utf8_tracking_position
+        next_whitespace_or_backslash_utf8_position - 1
       )
-      increment_tracker()
+      move_tracker_to_position(next_whitespace_or_backslash_utf8_position)
       utf8_cursor_position = utf8_tracking_position
+      return nil
     end
   end
 
@@ -345,5 +365,5 @@ local function lex_line(line)
   return tokens
 end
 
-source = [[\verbatim{}]]
+local source = [[\verbatim{aaa}]]
 inspect(lex_line(source))
