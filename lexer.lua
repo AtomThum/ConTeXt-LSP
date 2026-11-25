@@ -194,7 +194,7 @@ local function lex_line(line)
 
     -- Comments
     if utf8_char_at_pos(line, utf8_cursor_position) == "%" then
-      print("Token type is comment! Skipping to string end")
+      print_debug("Token type is comment! Skipping to string end")
       tokens[#tokens + 1] = {
         token_type = "comment",
         token_content = utf8.sub(line, utf8_cursor_position, utf8_line_length),
@@ -227,13 +227,18 @@ local function lex_line(line)
       local token_type = nil
 
       -- Single letters command
-      local next_utf8_cp = utf8.codepoint(line, utf8_cursor_position + 1)
+      local next_utf8_cp
+      if utf8_cursor_position + 1 > utf8_line_length then
+        next_utf8_cp = nil
+      else
+        next_utf8_cp = utf8.codepoint(line, utf8_cursor_position + 1)
+      end
       if ESCAPED_RESERVED_CODEPOINTS[next_utf8_cp] then
         token_type = ESCAPED_RESERVED_CODEPOINTS[next_utf8_cp]
         print_debug("Is a control sequence of type: " .. token_type)
         flush_token(
-          utf8.sub(line, utf8_cursor_position, utf8_cursor_position + 1),
           token_type,
+          utf8.sub(line, utf8_cursor_position, utf8_cursor_position + 1),
           utf8_cursor_position,
           utf8_cursor_position + 1
         )
@@ -276,24 +281,24 @@ local function lex_line(line)
               local verbatim_content = utf8.sub(line, verbatim_open_end_pos + 1, verbatim_close_start_pos - 1)
 
               -- Four tokens: verbatim command, verbatim close, contents, and open
-              flush_token(token_content, token_type, utf8_cursor_position, utf8_tracking_position)
+              flush_token(token_type, token_content, utf8_cursor_position, utf8_tracking_position - 1)
               flush_token(
-                utf8.sub(line, verbatim_open_start_pos, verbatim_open_end_pos),
                 "verbatim_open",
+                utf8.sub(line, verbatim_open_start_pos, verbatim_open_end_pos),
                 verbatim_open_start_pos,
                 verbatim_open_end_pos
               )
               if verbatim_content ~= "" then
                 flush_token(
-                  verbatim_content,
                   "verbatim_content",
+                  verbatim_content,
                   verbatim_open_end_pos + 1,
                   verbatim_close_start_pos - 1
                 )
               end
               flush_token(
-                utf8.sub(line, verbatim_close_start_pos, verbatim_close_end_pos),
                 "verbatim_close",
+                utf8.sub(line, verbatim_close_start_pos, verbatim_close_end_pos),
                 verbatim_close_start_pos,
                 verbatim_close_end_pos
               )
@@ -326,9 +331,9 @@ local function lex_line(line)
     end
 
     -- ConTeXt/TeX special characters
-    if SPECIAL_CHARS[utf8.codepoint(line, utf8_cursor_position)] then
+    if SPECIAL_CODEPOINTS[utf8.codepoint(line, utf8_cursor_position)] then
       flush_token(
-        SPECIAL_CHARS[utf8.codepoint(line, utf8_cursor_position)],
+        SPECIAL_CODEPOINTS[utf8.codepoint(line, utf8_cursor_position)],
         utf8_char_at_pos(line, utf8_cursor_position),
         utf8_cursor_position,
         utf8_cursor_position
@@ -340,10 +345,13 @@ local function lex_line(line)
 
     -- Normal words
     if not utf8.match(line, "^%s", utf8_cursor_position) then
-      -- Track until reaches \ or whitespace or end, then stop
-      local next_whitespace_or_backslash_utf8_position = utf8.find(line, "[%s%\\]", utf8_cursor_position)
-        or (utf8_line_length + 1)
-      print(next_whitespace_or_backslash_utf8_position)
+      -- Track until reaches \ or whitespace or special characters or end, then stop
+      local next_whitespace_or_backslash_utf8_position = utf8.find(
+        line,
+        '[%s%\\%{%}%[%]%(%)%#%"%=%$]',
+        utf8_cursor_position
+      ) or (utf8_line_length + 1)
+      print_debug(next_whitespace_or_backslash_utf8_position)
       flush_token(
         "words",
         utf8.sub(line, utf8_cursor_position, next_whitespace_or_backslash_utf8_position - 1),
@@ -365,5 +373,5 @@ local function lex_line(line)
   return tokens
 end
 
-local source = [[\verbatim{aaa}]]
+local source = [[test source $\frac{x}{y}$ $$\alpha\beta$$ \\ \tex{$testverbatim$}]]
 inspect(lex_line(source))
